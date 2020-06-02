@@ -147,7 +147,7 @@ pub fn draw_it(
     if !permissions {
         eprintln!("Did not have permissions for all directories");
     }
-    let longest_string_length = root_node
+    let mut longest_string_length = root_node
         .children
         .iter()
         .map(|c| find_longest_dir_name(&c, "   ", !use_full_path))
@@ -159,6 +159,9 @@ pub fn draw_it(
     } else {
         terminal_width as usize - longest_string_length
     };
+    if longest_string_length >= terminal_width as usize {
+        longest_string_length = terminal_width as usize
+    }
 
     // handle usize error also add do not show fancy output option
     let bar_text = repeat(BLOCKS[0]).take(max_bar_length).collect::<String>();
@@ -271,6 +274,40 @@ fn get_unicode_width_of_indent_and_name(indent: &str, name: &str) -> usize {
     UnicodeWidthStr::width(&*indent_and_name)
 }
 
+fn pad_or_trim_filename(node: &Node, indent: &str, display_data: &DisplayData) -> String {
+    let name = get_printable_name(&node.name, display_data.short_paths);
+    let width = get_unicode_width_of_indent_and_name(indent, &name);
+    let terminal_width = get_width_of_terminal() as usize;
+
+    let name_and_padding = name
+        + &(repeat(" ")
+            .take(display_data.longest_string_length - width)
+            .collect::<String>());
+
+    if UnicodeWidthStr::width(&*name_and_padding) > display_data.longest_string_length {
+        let s = name_and_padding
+            .chars()
+            .take(terminal_width - 2)
+            .collect::<String>();
+        s + ".."
+    } else {
+        name_and_padding
+    }
+}
+
+fn maybe_trim_filename(node: &Node, display_data: &DisplayData) -> String {
+    let mut name = get_printable_name(&node.name, display_data.short_paths);
+
+    if UnicodeWidthStr::width(&*name) > display_data.longest_string_length {
+        name = name
+            .chars()
+            .take(display_data.longest_string_length - 2)
+            .collect::<String>();
+        name += "..";
+    }
+    name
+}
+
 pub fn format_string(
     node: &Node,
     indent: &str,
@@ -279,21 +316,14 @@ pub fn format_string(
     display_data: &DisplayData,
 ) -> String {
     let pretty_size = format!("{:>5}", human_readable_number(node.size));
-
     let percent_size_str = format!("{:.0}%", display_data.percent_size(node) * 100.0);
-
-    let name = get_printable_name(&node.name, display_data.short_paths);
-    let width = get_unicode_width_of_indent_and_name(indent, &name);
 
     let (percents, name_and_padding) = if percent_bar != "" {
         let percents = format!("│{} │ {:>4}", percent_bar, percent_size_str);
-
-        let name_and_padding = name
-            + &(repeat(" ")
-                .take(display_data.longest_string_length - width)
-                .collect::<String>());
+        let name_and_padding = pad_or_trim_filename(node, indent, display_data);
         (percents, name_and_padding)
     } else {
+        let name = maybe_trim_filename(node, display_data);
         ("".into(), name)
     };
 
@@ -316,7 +346,8 @@ pub fn format_string(
         name_and_padding
     };
 
-    format!("{} {} {}{}", pretty_size, indent, pretty_name, percents)
+    let result = format!("{} {} {}{}", pretty_size, indent, pretty_name, percents);
+    result
 }
 
 fn human_readable_number(size: u64) -> String {
@@ -336,6 +367,61 @@ fn human_readable_number(size: u64) -> String {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+    #[allow(unused_imports)]
+    use std::path::PathBuf;
+
+    #[cfg(test)]
+    fn get_fake_display_data(longest_string_length: usize) -> DisplayData {
+        DisplayData {
+            short_paths: true,
+            is_reversed: false,
+            colors_on: false,
+            base_size: 1,
+            longest_string_length: longest_string_length,
+            ls_colors: LsColors::from_env().unwrap_or_default(),
+        }
+    }
+
+    #[test]
+    fn test_format_str() {
+        let n = Node {
+            name: PathBuf::from("/short"),
+            size: 2_u64.pow(12), // This is 4.0K
+            children: vec![],
+        };
+        let indent = "┌─┴";
+        let percent_bar = "";
+        let is_biggest = false;
+
+        let s = format_string(
+            &n,
+            indent,
+            percent_bar,
+            is_biggest,
+            &get_fake_display_data(6),
+        );
+        assert_eq!(s, " 4.0K ┌─┴ short");
+    }
+
+    #[test]
+    fn test_format_str_long_name() {
+        let name = "very_long_name_longer_than_the_eighty_character_limit_very_long_name_this_bit_will_truncate";
+        let n = Node {
+            name: PathBuf::from(name),
+            size: 2_u64.pow(12), // This is 4.0K
+            children: vec![],
+        };
+        let indent = "┌─┴";
+        let percent_bar = "";
+        let is_biggest = false;
+
+        let dd = get_fake_display_data(64);
+        let s = format_string(&n, indent, percent_bar, is_biggest, &dd);
+        assert_eq!(
+            s,
+            " 4.0K ┌─┴ very_long_name_longer_than_the_eighty_character_limit_very_lon.."
+        );
+    }
 
     #[test]
     fn test_human_readable_number() {
